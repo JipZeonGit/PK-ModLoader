@@ -1,0 +1,168 @@
+name: Release
+
+# Tag a commit with `v*` (for example `v1.0.0`) and this builds the project and
+# publishes a GitHub Release with the packaged `output/` folder attached.
+#
+# It can also be run manually from the Actions tab: a manual run only builds and
+# uploads a workflow artifact, so the pipeline can be tested without creating a tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Required to create a Release with the automatically provided token.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Full history so the changelog can compare against the previous tag.
+          fetch-depth: 0
+
+      - name: Install the MinGW-w64 cross toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends g++-mingw-w64-x86-64
+          x86_64-w64-mingw32-g++ --version | head -1
+          make --version | head -1
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Verify the produced binaries
+        run: |
+          set -euo pipefail
+          test -f output/dinput8.dll
+          test -f output/mods/plugins/PK_ImeFix.dll
+
+          # The loader must expose the six system dinput8 entry points, with
+          # DirectInput8Create at ordinal 1 as the real DLL has it.
+          x86_64-w64-mingw32-objdump -p output/dinput8.dll | grep -q 'DirectInput8Create'
+          x86_64-w64-mingw32-objdump -p output/dinput8.dll | grep -q 'GetdfDIJoystick'
+
+          # PK_ImeFix must publish the SDK entry points the loader looks for.
+          for sym in PK_GetModInfo PK_ModInit PK_ModShutdown; do
+            x86_64-w64-mingw32-objdump -p output/mods/plugins/PK_ImeFix.dll | grep -q "$sym"
+          done
+
+          # Belt and braces: a release must never contain game content.
+          if find output -type f \
+               \( -iname '*.kfc' -o -iname '*.kfc_data' -o -iname '*.kfc_dir' \
+                  -o -iname '*.ksp' -o -iname '*.rip' \
+                  -o -iname 'portal_knights_x64.exe' -o -iname 'pk_dedicated_server.exe' \
+                  -o -iname 'steam_api64*' -o -iname '*.log' \) | grep -q .; then
+            echo "::error::game files found under output/ - refusing to package"
+            find output -type f
+            exit 1
+          fi
+
+      - name: Package output/
+        id: package
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            NAME="PK-ModLoader-${GITHUB_REF_NAME}"
+          else
+            NAME="PK-ModLoader-$(git rev-parse --short HEAD)"
+          fi
+
+          # Archive the CONTENTS of output/ so it can be extracted straight into
+          # the game root directory, next to portal_knights_x64.exe.
+          ( cd output && zip -rq "../${NAME}.zip" . )
+          sha256sum "${NAME}.zip" > "${NAME}.zip.sha256"
+
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "Packaged ${NAME}.zip:"
+          unzip -l "${NAME}.zip"
+
+      - name: Upload the package as a workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            ${{ steps.package.outputs.name }}.zip
+            ${{ steps.package.outputs.name }}.zip.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          NAME="${{ steps.package.outputs.name }}"
+          ASSET="${NAME}.zip"
+          SUM="${NAME}.zip.sha256"
+
+          # Build the release body: install instructions + a compare link.
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "## Install"
+            echo
+            echo "Extract the archive into your **Portal Knights** game root directory"
+            echo "(the folder that contains \`portal_knights_x64.exe\`):"
+            echo
+            echo '```text'
+            echo "Portal Knights/"
+            echo "|- portal_knights_x64.exe"
+            echo "|- dinput8.dll                 <- core mod loader"
+            echo "\\- mods/"
+            echo "   \\- plugins/"
+            echo "      \\- PK_ImeFix.dll        <- Chinese IME & WinKey fix"
+            echo '```'
+            echo
+            echo "Launch the game normally. The loader writes \`mods/logs/pk_mod_loader.log\`."
+            echo "If that file does not appear, the loader was not loaded - see"
+            echo "[docs/GAME-FILES.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/GAME-FILES.md)."
+            echo
+            echo "## Contents"
+            echo
+            echo "| File | Description |"
+            echo "| --- | --- |"
+            echo "| \`dinput8.dll\` | PK-ModLoader core loader (transparent proxy DLL) |"
+            echo "| \`mods/plugins/PK_ImeFix.dll\` | Chinese IME lock and WinKey / sticky-key suppressor |"
+            echo
+            echo "## Checksum"
+            echo
+            echo '```text'
+            cat "${SUM}"
+            echo '```'
+            if [ -n "${PREV}" ]; then
+              echo
+              echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+            fi
+          } > /tmp/release-notes.md
+
+          PRERELEASE=""
+          case "${TAG}" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+
+          # Idempotent: re-running on an existing tag replaces the assets instead
+          # of failing.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists - updating its assets."
+            gh release upload "${TAG}" "${ASSET}" "${SUM}" --clobber
+          else
+            gh release create "${TAG}" "${ASSET}" "${SUM}" \
+              --title "${TAG}" \
+              --notes-file /tmp/release-notes.md \
+              ${PRERELEASE}
+          fi
+
+          gh release view "${TAG}" --json url,assets --jq '.url, (.assets[].name)'

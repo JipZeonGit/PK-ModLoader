@@ -1,0 +1,10 @@
+# Normalise every text file to LF, in the repository and in the working tree.
+# The build runs under MinGW-w64 / WSL, where a CRLF Makefile, .def or shell
+# script is a real breakage rather than a cosmetic issue.
+* text=auto eol=lf
+
+# Files whose bytes must never be line-ending converted.
+*.png  binary
+*.ico  binary
+*.dll  binary
+*.zip  binary

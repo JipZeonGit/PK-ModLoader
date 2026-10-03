@@ -1,0 +1,62 @@
+# ===========================================================================
+#  Portal Knights is commercial, copyrighted software.
+#  Nothing that ships with the game, or is extracted from it, may ever be
+#  committed to this repository. These rules are the safety net that makes
+#  that impossible by accident.
+# ===========================================================================
+
+# --- Local reference copies of the game (used for research; several GB) -----
+Reference/
+extracted_reference/
+
+# --- Anything shaped like a Keen engine archive / data package --------------
+*.kfc
+*.kfc_data
+*.kfc_dir
+*.ksp
+*.rip
+
+# --- Game executables and the dynamic libraries it ships with ---------------
+portal_knights_x64.exe
+pk_dedicated_server.exe
+steam_api64.dll
+dedicated_server.zip
+
+# --- Files the game itself writes at runtime --------------------------------
+portal_knights.cfg
+*.log
+*.dmp
+*.mdmp
+
+# ===========================================================================
+#  Build output and toolchain intermediates
+# ===========================================================================
+output/
+*.dll
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.a
+*.so
+*.dylib
+
+# Scratch space used while debugging the build
+.build/
+tmp/
+
+# ===========================================================================
+#  Editor / OS cruft
+# ===========================================================================
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# NOTE: sdk/minhook/ is vendored third-party source (BSD 2-Clause) and IS
+# committed on purpose -- it is required to build, and it is not game content.
